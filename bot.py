@@ -9,6 +9,9 @@ TOKEN = os.environ.get("BOT_TOKEN")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
+# Тук пазим ID на последното съобщение на бота за всеки потребител
+last_bot_messages = {}
+
 def get_client():
     creds_dict = json.loads(GOOGLE_CREDENTIALS)
     scopes = [
@@ -23,11 +26,9 @@ def find_user_by_telegram_id(telegram_id):
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
     sheet = spreadsheet.worksheet("SYSTEM_USERS")
     
-    # Взимаме всички данни
     data = sheet.get_all_values()
     
-    # Колона M е индекс 12 (започваме от 0)
-    for row in data[1:]:  # пропускаме заглавията
+    for row in data[1:]:
         if len(row) > 12 and str(row[12]).strip() == str(telegram_id):
             return {
                 "user": row[0],
@@ -35,15 +36,32 @@ def find_user_by_telegram_id(telegram_id):
             }
     return None
 
+async def delete_previous_message(context, chat_id):
+    """Изтрива предишното съобщение на бота, ако има такова"""
+    if chat_id in last_bot_messages:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_messages[chat_id])
+        except:
+            pass  # Ако вече е изтрито или е твърде старо – просто продължаваме
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
     user = find_user_by_telegram_id(telegram_id)
     
     if user is None:
         await update.message.reply_text("Този бот не работи")
         return
     
-    await update.message.reply_text(f"Здравей, {user['user']}! Имаш достъп.")
+    # Изтриваме старото съобщение на бота
+    await delete_previous_message(context, chat_id)
+    
+    # Изпращаме новото
+    sent = await update.message.reply_text(f"Здравей, {user['user']}! Имаш достъп.")
+    
+    # Запазваме ID-то на новото съобщение
+    last_bot_messages[chat_id] = sent.message_id
 
 def main():
     app = Application.builder().token(TOKEN).build()
