@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.0
+# Version: 1.1
 # ============================================
 
 import os
@@ -41,7 +41,6 @@ def find_user_by_telegram_id(telegram_id):
     return None
 
 def has_permission(user_row, column_index):
-    """Проверява дали в дадена колона има DA"""
     if len(user_row) > column_index:
         return str(user_row[column_index]).strip().upper() == "DA"
     return False
@@ -54,6 +53,10 @@ async def delete_previous_message(context, chat_id):
             pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Винаги грешка при /start
+    await update.message.reply_text("Този бот не работи")
+
+async def da(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
@@ -97,10 +100,8 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sheet = spreadsheet.worksheet("LiveStatus")
         data = sheet.get_all_values()
         
-        # Дата на обновяване (ред 2)
         update_info = data[1][0] if len(data) > 1 else "Няма данни"
         
-        # Търсим секцията БАНКОВИ НАЛИЧНОСТИ
         start_idx = None
         total_idx = None
         
@@ -115,7 +116,6 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Не мога да намеря секцията с банките")
             return
         
-        # Събираме фирмите
         firms = []
         for i in range(start_idx + 2, total_idx):
             row = data[i]
@@ -125,11 +125,9 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 balance = row[2].strip() if len(row) > 2 else ""
                 firms.append((firm, date, balance))
         
-        # Обща сума
         total_row = data[total_idx]
         total_sum = total_row[2].strip() if len(total_row) > 2 else "—"
         
-        # Формираме съобщението
         message = f"<b>{update_info}</b>\n\n"
         message += "<b>БАНКОВИ НАЛИЧНОСТИ</b>\n\n"
         
@@ -152,6 +150,7 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("da", da))
     app.add_handler(MessageHandler(filters.Regex("^Банки$"), banks))
     print("Ботът стартира...")
     app.run_polling()
