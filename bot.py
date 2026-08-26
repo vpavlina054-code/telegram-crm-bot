@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.3
+# Version: 1.4
 # ============================================
 
 import os
@@ -69,8 +69,8 @@ async def da(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_previous_message(context, chat_id)
     
     keyboard = [
-        [KeyboardButton("Банки")],
-        [KeyboardButton("Наличност")]
+        [KeyboardButton("Банки"), KeyboardButton("Наличност")],
+        [KeyboardButton("Всички задължения"), KeyboardButton("Задължения")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -90,8 +90,7 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    # Колона N = индекс 13 (BankiStatus)
-    if not has_permission(user["row"], 13):
+    if not has_permission(user["row"], 13):  # N - BankiStatus
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -157,8 +156,7 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    # Колона O = индекс 14 (KasaFinal)
-    if not has_permission(user["row"], 14):
+    if not has_permission(user["row"], 14):  # O - KasaFinal
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -192,7 +190,7 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(row) > 0 and row[0].strip():
                 label = row[0].strip()
                 value = row[2].strip() if len(row) > 2 else ""
-                if value:  # само ако има сума
+                if value:
                     items.append((label, value))
         
         message = f"<b>{update_info}</b>\n\n"
@@ -201,6 +199,136 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for label, value in items:
             message += f"{label}\n"
             message += f"<b>{value}</b>\n\n"
+        
+        sent = await update.message.reply_text(message, parse_mode="HTML")
+        last_bot_messages[chat_id] = sent.message_id
+        
+    except Exception as e:
+        await update.message.reply_text(f"Грешка при четене: {str(e)}")
+
+async def allpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    user = find_user_by_telegram_id(telegram_id)
+    
+    if user is None:
+        await update.message.reply_text("Този бот не работи")
+        return
+    
+    if not has_permission(user["row"], 15):  # P - ALLpay
+        await update.message.reply_text("Нямаш права за тази информация")
+        return
+    
+    await delete_previous_message(context, chat_id)
+    
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("LiveStatus")
+        data = sheet.get_all_values()
+        
+        update_info = data[1][0] if len(data) > 1 else "Няма данни"
+        
+        start_idx = None
+        total_idx = None
+        
+        for i, row in enumerate(data):
+            if len(row) > 0 and "ЗАДЪЛЖЕНИЯ КЪМ ОБЕКТИ" in str(row[0]).upper():
+                start_idx = i
+            if len(row) > 0 and "ОБЩО ЗАДЪЛЖЕНИЯ" in str(row[0]).upper():
+                total_idx = i
+                break
+        
+        if start_idx is None or total_idx is None:
+            await update.message.reply_text("Не мога да намеря секцията със задълженията")
+            return
+        
+        items = []
+        for i in range(start_idx + 2, total_idx):  # +2 за да пропуснем заглавието и header-а
+            row = data[i]
+            if len(row) > 0 and row[0].strip():
+                name = row[0].strip()
+                date = row[1].strip() if len(row) > 1 else ""
+                total_debt = row[2].strip() if len(row) > 2 else ""
+                plan = row[3].strip() if len(row) > 3 else ""
+                required = row[4].strip() if len(row) > 4 else ""
+                items.append((name, date, total_debt, plan, required))
+        
+        total_row = data[total_idx]
+        total_debt_sum = total_row[2].strip() if len(total_row) > 2 else "—"
+        total_required = total_row[4].strip() if len(total_row) > 4 else "—"
+        
+        message = f"<b>{update_info}</b>\n\n"
+        message += "<b>ЗАДЪЛЖЕНИЯ КЪМ ОБЕКТИ</b>\n\n"
+        
+        for name, date, total_debt, plan, required in items:
+            message += f"<b>{name}</b>\n"
+            message += f"{date} | {total_debt} | {plan} | {required}\n\n"
+        
+        message += "────────────────\n"
+        message += f"<b>ОБЩО ЗАДЪЛЖЕНИЯ:</b>\n"
+        message += f"Общо дълг: {total_debt_sum}\n"
+        message += f"Изискуемо: {total_required}"
+        
+        sent = await update.message.reply_text(message, parse_mode="HTML")
+        last_bot_messages[chat_id] = sent.message_id
+        
+    except Exception as e:
+        await update.message.reply_text(f"Грешка при четене: {str(e)}")
+
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    user = find_user_by_telegram_id(telegram_id)
+    
+    if user is None:
+        await update.message.reply_text("Този бот не работи")
+        return
+    
+    if not has_permission(user["row"], 16):  # Q - PAY
+        await update.message.reply_text("Нямаш права за тази информация")
+        return
+    
+    await delete_previous_message(context, chat_id)
+    
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("LiveStatus")
+        data = sheet.get_all_values()
+        
+        update_info = data[1][0] if len(data) > 1 else "Няма данни"
+        
+        start_idx = None
+        total_idx = None
+        
+        for i, row in enumerate(data):
+            if len(row) > 0 and "ЗАДЪЛЖЕНИЯ КЪМ ОБЕКТИ" in str(row[0]).upper():
+                start_idx = i
+            if len(row) > 0 and "ОБЩО ЗАДЪЛЖЕНИЯ" in str(row[0]).upper():
+                total_idx = i
+                break
+        
+        if start_idx is None or total_idx is None:
+            await update.message.reply_text("Не мога да намеря секцията със задълженията")
+            return
+        
+        items = []
+        for i in range(start_idx + 2, total_idx):
+            row = data[i]
+            if len(row) > 0 and row[0].strip():
+                name = row[0].strip()
+                required = row[4].strip() if len(row) > 4 else ""
+                items.append((name, required))
+        
+        message = f"<b>{update_info}</b>\n\n"
+        message += "<b>ИЗИСКУЕМИ СУМИ</b>\n\n"
+        
+        for name, required in items:
+            message += f"<b>{name}</b>\n"
+            message += f"{required}\n\n"
         
         sent = await update.message.reply_text(message, parse_mode="HTML")
         last_bot_messages[chat_id] = sent.message_id
@@ -226,6 +354,8 @@ def main():
     app.add_handler(CommandHandler("deleteoff", deleteoff))
     app.add_handler(MessageHandler(filters.Regex("^Банки$"), banks))
     app.add_handler(MessageHandler(filters.Regex("^Наличност$"), nаличност))
+    app.add_handler(MessageHandler(filters.Regex("^Всички задължения$"), allpay))
+    app.add_handler(MessageHandler(filters.Regex("^Задължения$"), pay))
     print("Ботът стартира...")
     app.run_polling()
 
@@ -234,8 +364,17 @@ if __name__ == "__main__":
 
 
 # ============================================
-# ОПИСАНИЕ НА БУТОНИТЕ
+# ОПИСАНИЕ НА БУТОНИТЕ И КОМАНДИТЕ
 # ============================================
-# Банки      → Показва моментното състояние на всички банкови сметки + обща сума
-# Наличност  → Показва касата, неразпределените суми и салдата по касиери
+# БУТОНИ:
+# Банки                → Банкови наличности + обща сума
+# Наличност            → Каса, неразпределени суми и касиери
+# Всички задължения    → Пълна информация за задълженията към обекти + общо
+# Задължения           → Само име на обект + изискуема сума
+#
+# КОМАНДИ (не са бутони):
+# /da                  → Вход в системата (показва менюто)
+# /start               → Винаги връща "Този бот не работи"
+# /deleteon            → Включва автоматично изтриване на стари съобщения
+# /deleteoff           → Изключва автоматичното изтриване
 # ============================================
