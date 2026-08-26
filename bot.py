@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.2.1
+# Version: 1.3
 # ============================================
 
 import os
@@ -68,7 +68,10 @@ async def da(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await delete_previous_message(context, chat_id)
     
-    keyboard = [[KeyboardButton("Банки")]]
+    keyboard = [
+        [KeyboardButton("Банки")],
+        [KeyboardButton("Наличност")]
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     sent = await update.message.reply_text(
@@ -138,10 +141,68 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "────────────────\n"
         message += f"<b>ОБЩО БАНКИ:</b> {total_sum}"
         
-        sent = await update.message.reply_text(
-            message,
-            parse_mode="HTML"
-        )
+        sent = await update.message.reply_text(message, parse_mode="HTML")
+        last_bot_messages[chat_id] = sent.message_id
+        
+    except Exception as e:
+        await update.message.reply_text(f"Грешка при четене: {str(e)}")
+
+async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    user = find_user_by_telegram_id(telegram_id)
+    
+    if user is None:
+        await update.message.reply_text("Този бот не работи")
+        return
+    
+    # Колона O = индекс 14 (KasaFinal)
+    if not has_permission(user["row"], 14):
+        await update.message.reply_text("Нямаш права за тази информация")
+        return
+    
+    await delete_previous_message(context, chat_id)
+    
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("LiveStatus")
+        data = sheet.get_all_values()
+        
+        update_info = data[1][0] if len(data) > 1 else "Няма данни"
+        
+        start_idx = None
+        end_idx = None
+        
+        for i, row in enumerate(data):
+            if len(row) > 0 and "КАСА И НЕРАЗПРЕДЕЛЕНИ" in str(row[0]).upper():
+                start_idx = i
+            if len(row) > 0 and "ЗАДЪЛЖЕНИЯ КЪМ ОБЕКТИ" in str(row[0]).upper():
+                end_idx = i
+                break
+        
+        if start_idx is None or end_idx is None:
+            await update.message.reply_text("Не мога да намеря секцията с наличностите")
+            return
+        
+        items = []
+        for i in range(start_idx + 1, end_idx):
+            row = data[i]
+            if len(row) > 0 and row[0].strip():
+                label = row[0].strip()
+                value = row[2].strip() if len(row) > 2 else ""
+                if value:  # само ако има сума
+                    items.append((label, value))
+        
+        message = f"<b>{update_info}</b>\n\n"
+        message += "<b>КАСА И НЕРАЗПРЕДЕЛЕНИ</b>\n\n"
+        
+        for label, value in items:
+            message += f"{label}\n"
+            message += f"<b>{value}</b>\n\n"
+        
+        sent = await update.message.reply_text(message, parse_mode="HTML")
         last_bot_messages[chat_id] = sent.message_id
         
     except Exception as e:
@@ -164,8 +225,17 @@ def main():
     app.add_handler(CommandHandler("deleteon", deleteon))
     app.add_handler(CommandHandler("deleteoff", deleteoff))
     app.add_handler(MessageHandler(filters.Regex("^Банки$"), banks))
+    app.add_handler(MessageHandler(filters.Regex("^Наличност$"), nаличност))
     print("Ботът стартира...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================
+# ОПИСАНИЕ НА БУТОНИТЕ
+# ============================================
+# Банки      → Показва моментното състояние на всички банкови сметки + обща сума
+# Наличност  → Показва касата, неразпределените суми и салдата по касиери
+# ============================================
