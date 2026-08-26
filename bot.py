@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.2
+# Version: 1.2.1
 # ============================================
 
 import os
@@ -15,7 +15,6 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
 last_bot_messages = {}
-# По подразбиране изтриването е включено за всеки потребител
 delete_enabled = {}
 
 def get_client():
@@ -48,7 +47,6 @@ def has_permission(user_row, column_index):
     return False
 
 async def delete_previous_message(context, chat_id):
-    # Проверяваме дали изтриването е включено за този чат
     if delete_enabled.get(chat_id, True) and chat_id in last_bot_messages:
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_messages[chat_id])
@@ -149,12 +147,12 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Грешка при четене: {str(e)}")
 
-async def delete_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def deleteon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     delete_enabled[chat_id] = True
     await update.message.reply_text("Изтриването на стари съобщения е ВКЛЮЧЕНО")
 
-async def delete_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def deleteoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     delete_enabled[chat_id] = False
     await update.message.reply_text("Изтриването на стари съобщения е ИЗКЛЮЧЕНО")
@@ -163,13 +161,9 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("da", da))
-    app.add_handler(CommandHandler("delete", delete_on))  # ще го подобрим
+    app.add_handler(CommandHandler("deleteon", deleteon))
+    app.add_handler(CommandHandler("deleteoff", deleteoff))
     app.add_handler(MessageHandler(filters.Regex("^Банки$"), banks))
-    
-    # По-добър начин за on/off
-    app.add_handler(CommandHandler("delete_on", delete_on))
-    app.add_handler(CommandHandler("delete_off", delete_off))
-    
     print("Ботът стартира...")
     app.run_polling()
 
