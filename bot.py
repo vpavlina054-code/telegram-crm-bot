@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.4
+# Version: 1.5
 # ============================================
 
 import os
@@ -11,7 +11,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 TOKEN = os.environ.get("BOT_TOKEN")
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")                    # Smetki
+PRIHODI_SPREADSHEET_ID = os.environ.get("PRIHODI_SPREADSHEET_ID")    # Prihodi i Razhodi
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
 last_bot_messages = {}
@@ -70,7 +71,8 @@ async def da(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [KeyboardButton("Банки"), KeyboardButton("Наличност")],
-        [KeyboardButton("Всички задължения"), KeyboardButton("Задължения")]
+        [KeyboardButton("Всички задължения"), KeyboardButton("Задължения")],
+        [KeyboardButton("Моя Баланс")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -90,7 +92,7 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    if not has_permission(user["row"], 13):  # N - BankiStatus
+    if not has_permission(user["row"], 13):
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -156,7 +158,7 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    if not has_permission(user["row"], 14):  # O - KasaFinal
+    if not has_permission(user["row"], 14):
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -216,7 +218,7 @@ async def allpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    if not has_permission(user["row"], 15):  # P - ALLpay
+    if not has_permission(user["row"], 15):
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -245,7 +247,7 @@ async def allpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         items = []
-        for i in range(start_idx + 2, total_idx):  # +2 за да пропуснем заглавието и header-а
+        for i in range(start_idx + 2, total_idx):
             row = data[i]
             if len(row) > 0 and row[0].strip():
                 name = row[0].strip()
@@ -287,7 +289,7 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Този бот не работи")
         return
     
-    if not has_permission(user["row"], 16):  # Q - PAY
+    if not has_permission(user["row"], 16):
         await update.message.reply_text("Нямаш права за тази информация")
         return
     
@@ -336,6 +338,50 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Грешка при четене: {str(e)}")
 
+async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    user = find_user_by_telegram_id(telegram_id)
+    
+    if user is None:
+        await update.message.reply_text("Този бот не работи")
+        return
+    
+    if not has_permission(user["row"], 17):  # R - Balance
+        await update.message.reply_text("Нямаш права за тази информация")
+        return
+    
+    await delete_previous_message(context, chat_id)
+    
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(PRIHODI_SPREADSHEET_ID)
+        sheet = spreadsheet.worksheet("Total")
+        data = sheet.get_all_values()
+        
+        username = user["user"]
+        balance = None
+        
+        for row in data:
+            if len(row) > 1 and row[1].strip() == username:
+                balance = row[2].strip() if len(row) > 2 else "—"
+                break
+        
+        if balance is None:
+            await update.message.reply_text(f"Не намерих наличност за {username}")
+            return
+        
+        message = f"Твоята текуща наличност:\n\n"
+        message += f"<b>{username}</b>\n"
+        message += f"<b>{balance}</b>"
+        
+        sent = await update.message.reply_text(message, parse_mode="HTML")
+        last_bot_messages[chat_id] = sent.message_id
+        
+    except Exception as e:
+        await update.message.reply_text(f"Грешка при четене: {str(e)}")
+
 async def deleteon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     delete_enabled[chat_id] = True
@@ -356,6 +402,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^Наличност$"), nаличност))
     app.add_handler(MessageHandler(filters.Regex("^Всички задължения$"), allpay))
     app.add_handler(MessageHandler(filters.Regex("^Задължения$"), pay))
+    app.add_handler(MessageHandler(filters.Regex("^Моя Баланс$"), my_balance))
     print("Ботът стартира...")
     app.run_polling()
 
@@ -367,14 +414,15 @@ if __name__ == "__main__":
 # ОПИСАНИЕ НА БУТОНИТЕ И КОМАНДИТЕ
 # ============================================
 # БУТОНИ:
-# Банки                → Банкови наличности + обща сума
-# Наличност            → Каса, неразпределени суми и касиери
-# Всички задължения    → Пълна информация за задълженията към обекти + общо
-# Задължения           → Само име на обект + изискуема сума
+# Банки                → Банкови наличности + обща сума (Smetki / LiveStatus)
+# Наличност            → Каса и неразпределени суми (Smetki / LiveStatus)
+# Всички задължения    → Пълна информация за задълженията + общо (Smetki / LiveStatus)
+# Задължения           → Само име + изискуема сума (Smetki / LiveStatus)
+# Моя Баланс           → Лична текуща наличност на потребителя (Prihodi i Razhodi / Total)
 #
-# КОМАНДИ (не са бутони):
-# /da                  → Вход в системата (показва менюто)
-# /start               → Винаги връща "Този бот не работи"
-# /deleteon            → Включва автоматично изтриване на стари съобщения
-# /deleteoff           → Изключва автоматичното изтриване
+# КОМАНДИ:
+# /da                  → Вход в системата
+# /start               → Винаги "Този бот не работи"
+# /deleteon            → Включва изтриване на стари съобщения
+# /deleteoff           → Изключва изтриването
 # ============================================
