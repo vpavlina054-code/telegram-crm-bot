@@ -1,6 +1,6 @@
 # ============================================
 # Telegram CRM Bot
-# Version: 1.9
+# Version: 2.0
 # ============================================
 
 import os
@@ -34,10 +34,9 @@ COL = {
     "TRANSFERI": 20,
     "PAYNOW": 21,
     "NOTIFY": 22,
+    "NOTIFY_TRANSFER": 23,
 }
 
-last_bot_messages = {}
-delete_enabled = {}
 _client = None
 
 
@@ -55,16 +54,23 @@ def get_client():
 
 
 def find_user_by_telegram_id(telegram_id):
-    sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("SYSTEM_USERS")
-    data = sheet.get_all_values()
+    data = get_client().open_by_key(SPREADSHEET_ID).worksheet("SYSTEM_USERS").get_all_values()
     for row in data[1:]:
         if len(row) > COL["TELEGRAM_ID"] and str(row[COL["TELEGRAM_ID"]]).strip() == str(telegram_id):
             return {"user": row[0], "row": row}
     return None
 
 
+def find_user_row_by_name(name):
+    data = get_client().open_by_key(SPREADSHEET_ID).worksheet("SYSTEM_USERS").get_all_values()
+    for row in data[1:]:
+        if row and row[0].strip() == str(name).strip():
+            return row
+    return None
+
+
 def has_permission(user_row, column_index):
-    if len(user_row) > column_index:
+    if user_row and len(user_row) > column_index:
         return str(user_row[column_index]).strip().upper() == "DA"
     return False
 
@@ -108,6 +114,14 @@ def get_system_users():
     return [row[0].strip() for row in data[1:] if row and row[0].strip()]
 
 
+def get_user_balance(username):
+    data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Total").get_all_values()
+    for row in data:
+        if len(row) > 2 and row[1].strip() == username:
+            return row[2].strip()
+    return "—"
+
+
 def get_all_balances():
     try:
         data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Total").get_all_values()
@@ -124,28 +138,53 @@ def get_all_balances():
         return f"Грешка при четене на наличности: {e}"
 
 
+async def send_to_telegram_id(context, telegram_id, text):
+    if telegram_id and str(telegram_id).isdigit():
+        try:
+            await context.bot.send_message(chat_id=int(telegram_id), text=text)
+        except:
+            pass
+
+
 async def send_notifications(context, base_message):
     try:
         full_message = f"{base_message}\n\nТекущи наличности:\n{get_all_balances()}"
         data = get_client().open_by_key(SPREADSHEET_ID).worksheet("SYSTEM_USERS").get_all_values()
         for row in data[1:]:
-            if len(row) > COL["NOTIFY"] and str(row[COL["NOTIFY"]]).strip().upper() == "DA":
-                telegram_id = str(row[COL["TELEGRAM_ID"]]).strip() if len(row) > COL["TELEGRAM_ID"] else ""
-                if telegram_id.isdigit():
-                    try:
-                        await context.bot.send_message(chat_id=int(telegram_id), text=full_message)
-                    except:
-                        pass
+            if has_permission(row, COL["NOTIFY"]):
+                telegram_id = row[COL["TELEGRAM_ID"]].strip() if len(row) > COL["TELEGRAM_ID"] else ""
+                await send_to_telegram_id(context, telegram_id, full_message)
     except Exception as e:
         print(f"Грешка при известия: {e}")
 
 
-async def delete_previous_message(context, chat_id):
-    if delete_enabled.get(chat_id, True) and chat_id in last_bot_messages:
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_messages[chat_id])
-        except:
-            pass
+async def send_transfer_personal_notifications(context, from_user, to_user, amount, reason):
+    from_row = find_user_row_by_name(from_user)
+    to_row = find_user_row_by_name(to_user)
+
+    if has_permission(from_row, COL["NOTIFY_TRANSFER"]):
+        from_balance = get_user_balance(from_user)
+        text = (
+            f"📤 Изпратен трансфер\n"
+            f"Към: {to_user}\n"
+            f"Сума: {amount} €\n"
+            f"Основание: {reason if reason else '—'}\n\n"
+            f"Твоята каса сега: {from_balance}"
+        )
+        telegram_id = from_row[COL["TELEGRAM_ID"]].strip() if from_row and len(from_row) > COL["TELEGRAM_ID"] else ""
+        await send_to_telegram_id(context, telegram_id, text)
+
+    if has_permission(to_row, COL["NOTIFY_TRANSFER"]) and from_user != to_user:
+        to_balance = get_user_balance(to_user)
+        text = (
+            f"📥 Получен трансфер\n"
+            f"От: {from_user}\n"
+            f"Сума: {amount} €\n"
+            f"Основание: {reason if reason else '—'}\n\n"
+            f"Твоята каса сега: {to_balance}"
+        )
+        telegram_id = to_row[COL["TELEGRAM_ID"]].strip() if to_row and len(to_row) > COL["TELEGRAM_ID"] else ""
+        await send_to_telegram_id(context, telegram_id, text)
 
 
 def pack_keyboard(buttons, per_row=2, extra_rows=None):
@@ -202,8 +241,7 @@ def get_operation_keyboard():
 
 
 def get_list_keyboard(items):
-    buttons = [KeyboardButton(item) for item in items]
-    return pack_keyboard(buttons, extra_rows=[[KeyboardButton("← Отказ")]])
+    return pack_keyboard([KeyboardButton(item) for item in items], extra_rows=[[KeyboardButton("← Отказ")]])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,51 +252,37 @@ async def da(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update)
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
-    sent = await update.message.reply_text(
+    await update.message.reply_text(
         f"Здравей, {user['user']}!\nИзбери опция:",
         reply_markup=get_main_keyboard(user["row"])
     )
-    last_bot_messages[chat_id] = sent.message_id
 
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update)
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
-    sent = await update.message.reply_text("Главно меню:", reply_markup=get_main_keyboard(user["row"]))
-    last_bot_messages[chat_id] = sent.message_id
+    await update.message.reply_text("Главно меню:", reply_markup=get_main_keyboard(user["row"]))
 
 
 async def daily_operations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update)
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
-    sent = await update.message.reply_text("Избери тип операция:", reply_markup=get_daily_keyboard(user["row"]))
-    last_bot_messages[chat_id] = sent.message_id
+    await update.message.reply_text("Избери тип операция:", reply_markup=get_daily_keyboard(user["row"]))
 
 
 async def operation_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["PAYNOW"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
-    sent = await update.message.reply_text("Избери тип операция:", reply_markup=get_operation_keyboard())
-    last_bot_messages[chat_id] = sent.message_id
+    await update.message.reply_text("Избери тип операция:", reply_markup=get_operation_keyboard())
 
 
 async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["BANKI"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(SPREADSHEET_ID).worksheet("LiveStatus").get_all_values()
         update_info = data[1][0] if len(data) > 1 else "Няма данни"
@@ -282,8 +306,7 @@ async def banks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for firm, date, balance in firms:
             message += f"<b>{firm}</b>\n{date}  |  {balance}\n\n"
         message += f"────────────────\n<b>ОБЩО БАНКИ:</b> {total_sum}"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -292,8 +315,6 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["KASA"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(SPREADSHEET_ID).worksheet("LiveStatus").get_all_values()
         update_info = data[1][0] if len(data) > 1 else "Няма данни"
@@ -317,8 +338,7 @@ async def nаличност(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = f"<b>{update_info}</b>\n\n<b>КАСА И НЕРАЗПРЕДЕЛЕНИ</b>\n\n"
         for label, value in items:
             message += f"{label}\n<b>{value}</b>\n\n"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -327,8 +347,6 @@ async def allpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["ALLPAY"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(SPREADSHEET_ID).worksheet("LiveStatus").get_all_values()
         update_info = data[1][0] if len(data) > 1 else "Няма данни"
@@ -358,8 +376,7 @@ async def allpay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for name, date, total_debt, plan, required in items:
             message += f"<b>{name}</b>\n{date} | {total_debt} | {plan} | {required}\n\n"
         message += f"────────────────\n<b>ОБЩО ЗАДЪЛЖЕНИЯ:</b>\nОбщо дълг: {total_row[2] if len(total_row) > 2 else '—'}\nИзискуемо: {total_row[4] if len(total_row) > 4 else '—'}"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -368,8 +385,6 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["PAY"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(SPREADSHEET_ID).worksheet("LiveStatus").get_all_values()
         update_info = data[1][0] if len(data) > 1 else "Няма данни"
@@ -393,8 +408,7 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = f"<b>{update_info}</b>\n\n<b>ИЗИСКУЕМИ СУМИ</b>\n\n"
         for name, required, _ in items:
             message += f"<b>{name}</b>\n{required}\n\n"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -403,22 +417,13 @@ async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["BALANCE"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
-        data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Total").get_all_values()
-        username = user["user"]
-        balance = None
-        for row in data:
-            if len(row) > 1 and row[1].strip() == username:
-                balance = row[2].strip() if len(row) > 2 else "—"
-                break
-        if balance is None:
-            await update.message.reply_text(f"Не намерих наличност за {username}")
+        balance = get_user_balance(user["user"])
+        if balance == "—":
+            await update.message.reply_text(f"Не намерих наличност за {user['user']}")
             return
-        message = f"Твоята текуща наличност:\n\n<b>{username}</b>\n<b>{balance}</b>"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        message = f"Твоята текуща наличност:\n\n<b>{user['user']}</b>\n<b>{balance}</b>"
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_main_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -427,8 +432,6 @@ async def show_prihodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["PRIHODI"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Prihodi").get_all_values()
         records = [row for row in data[1:] if row and row[0].strip()][-10:]
@@ -436,8 +439,7 @@ async def show_prihodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "<b>Последни 10 Прихода:</b>\n\n"
         for row in records:
             message += f"<b>{row[0]}</b>\n{row[1] if len(row)>1 else ''} €\n{row[2] if len(row)>2 else ''} → {row[4] if len(row)>4 else ''}\n{row[3] if len(row)>3 else ''}\n\n"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -446,8 +448,6 @@ async def show_razhodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["RAZHODI"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Razhodi").get_all_values()
         records = [row for row in data[1:] if row and row[0].strip()][-10:]
@@ -455,8 +455,7 @@ async def show_razhodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "<b>Последни 10 Разхода:</b>\n\n"
         for row in records:
             message += f"<b>{row[0]}</b>\n{row[1] if len(row)>1 else ''} €\n{row[2] if len(row)>2 else ''}\n{row[3] if len(row)>3 else ''}\nПлатил: {row[4] if len(row)>4 else ''}\n\n"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -465,8 +464,6 @@ async def show_transfers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await require_user(update, COL["TRANSFERI"])
     if user is None:
         return
-    chat_id = update.effective_chat.id
-    await delete_previous_message(context, chat_id)
     try:
         data = get_client().open_by_key(PRIHODI_SPREADSHEET_ID).worksheet("Transfers").get_all_values()
         records = [row for row in data[1:] if row and row[0].strip()][-10:]
@@ -477,8 +474,7 @@ async def show_transfers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(row) > 4 and row[4]:
                 message += f"{row[4]}\n"
             message += "\n"
-        sent = await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
-        last_bot_messages[chat_id] = sent.message_id
+        await update.message.reply_text(message, parse_mode="HTML", reply_markup=get_daily_keyboard(user["row"]))
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}")
 
@@ -665,6 +661,13 @@ async def transfer_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{context.user_data['from_user']} → {context.user_data['to_user']}\n"
             f"Основание: {reason if reason else '—'}"
         ))
+        await send_transfer_personal_notifications(
+            context,
+            context.user_data["from_user"],
+            context.user_data["to_user"],
+            context.user_data["amount"],
+            reason
+        )
     except Exception as e:
         await update.message.reply_text(f"Грешка: {str(e)}", reply_markup=get_main_keyboard(context.user_data.get("row", [])))
     return ConversationHandler.END
@@ -673,18 +676,6 @@ async def transfer_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Операцията е отменена.", reply_markup=get_main_keyboard(context.user_data.get("row", [])))
     return ConversationHandler.END
-
-
-async def deleteon(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    delete_enabled[chat_id] = True
-    await update.message.reply_text("Изтриването е ВКЛЮЧЕНО")
-
-
-async def deleteoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    delete_enabled[chat_id] = False
-    await update.message.reply_text("Изтриването е ИЗКЛЮЧЕНО")
 
 
 def main():
@@ -721,8 +712,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("da", da))
-    app.add_handler(CommandHandler("deleteon", deleteon))
-    app.add_handler(CommandHandler("deleteoff", deleteoff))
     app.add_handler(prihod_conv)
     app.add_handler(razhod_conv)
     app.add_handler(transfer_conv)
